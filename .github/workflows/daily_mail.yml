@@ -1,0 +1,31 @@
+name: Täglicher Lade-Reminder
+
+on:
+  schedule:
+    # 12:00 UTC entspricht 14:00 Uhr deutscher Sommerzeit
+    - cron: '0 12 * * *'
+  workflow_dispatch: # Erlaubt den manuellen Test-Button
+
+jobs:
+  send-mail:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Abhängigkeiten installieren
+        run: pip install requests
+
+      - name: E-Mail Skript ausführen
+        env:
+          TIBBER_TOKEN: ${{ secrets.TIBBER_TOKEN }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          APP_URL: ${{ secrets.APP_URL }}
+        run: python send_mail.py
