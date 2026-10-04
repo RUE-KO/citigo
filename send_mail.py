@@ -7,7 +7,7 @@ TIBBER_TOKEN = os.environ.get("TIBBER_TOKEN")
 EMAIL_USER = os.environ.get("EMAIL_USER")
 EMAIL_PASS = os.environ.get("EMAIL_PASS")
 EMAIL_TO = os.environ.get("EMAIL_TO")
-APP_URL = os.environ.get("APP_URL", "https://deine-app.streamlit.app")
+APP_URL = os.environ.get("APP_URL", "https://citigo-nd6mvchpu5qc8mbqqy8qox.streamlit.app")
 
 def check_and_send():
     if not all([TIBBER_TOKEN, EMAIL_USER, EMAIL_PASS, EMAIL_TO]):
