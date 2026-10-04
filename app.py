@@ -10,14 +10,13 @@ st.set_page_config(
     layout="centered"
 )
 
-# Schlankeres Layout & 2-Spalten-Zwang für Mobilgeräte via CSS (sauber als String verpackt)
+# Schlankeres Layout & 2-Spalten-Zwang für Mobilgeräte
 st.markdown("""
     <style>
         .block-container {padding-top: 1.5rem; padding-bottom: 2rem;}
         div[data-testid="stMetricValue"] {font-size: 1.0rem !important;}
         div[data-testid="stMetricLabel"] {font-size: 0.75rem !important;}
         
-        /* Erzwingt 2 Spalten nebeneinander auch auf Mobilgeräten */
         [data-testid="stHorizontalBlock"] {
             display: flex !important;
             flex-direction: row !important;
@@ -33,7 +32,6 @@ st.markdown("""
 
 st.title("⚡ EV Ladeplaner")
 
-# Zeitzone für Deutschland festlegen (verhindert 2h Zeitversatz zu UTC)
 TZ_BERLIN = zoneinfo.ZoneInfo("Europe/Berlin")
 
 # --- SEITENLEISTE / EINGABEN ---
@@ -65,23 +63,21 @@ def lade_preisdaten():
     morgen = heute + datetime.timedelta(days=1)
     timestamps, prices = [], []
     headers = {'User-Agent': 'Mozilla/5.0'}
-    morgen_verfuegbar = True
+    morgen_verfuegbar = False
 
     for tag in [heute, morgen]:
         url = f"https://api.energy-charts.info/price?bzn=DE-LU&start={tag.strftime('%Y-%m-%d')}"
         try:
-            response = requests.get(url, headers=headers)
+            response = requests.get(url, headers=headers, timeout=5)
             if response.status_code == 200:
                 data = response.json()
-                if "unix_seconds" in data and data["unix_seconds"]:
+                if "unix_seconds" in data and data["unix_seconds"] and len(data["unix_seconds"]) > 0:
                     timestamps.extend(data["unix_seconds"])
                     prices.extend(data["price"])
-            else:
-                if tag == morgen:
-                    morgen_verfuegbar = False
+                    if tag == morgen:
+                        morgen_verfuegbar = True
         except Exception:
-            if tag == morgen:
-                morgen_verfuegbar = False
+            pass
             
     return timestamps, prices, morgen_verfuegbar
 
@@ -117,11 +113,11 @@ def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_s
 
 timestamps, prices, morgen_da = lade_preisdaten()
 
-if not morgen_da:
+if not morgen_da and len(timestamps) > 0:
     st.sidebar.info("ℹ️ Preise für morgen stehen erst ab ca. 13:00 Uhr bereit.")
 
 if not timestamps:
-    st.error("Keine Preisdaten verfügbar.")
+    st.error("Keine Preisdaten verfügbar. Bitte versuche es in wenigen Minuten erneut.")
 else:
     st.caption(f"**{fahrzeug}** | Akkustand: **{aktueller_soc:.0f}%**")
 
