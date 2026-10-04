@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import datetime
+import zoneinfo
 
 # --- SEITEN-KONFIGURATION ---
 st.set_page_config(
@@ -18,6 +19,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("⚡ EV Ladeplaner")
+
+# Zeitzone für Deutschland festlegen (verhindert 2h Zeitversatz zu UTC)
+TZ_BERLIN = zoneinfo.ZoneInfo("Europe/Berlin")
 
 # --- SEITENLEISTE / EINGABEN ---
 st.sidebar.header("Fahrzeug & Einstellungen")
@@ -44,7 +48,7 @@ ladeleistung_kw = st.sidebar.number_input("Ladeleistung (kW)", value=default_kw,
 # --- LOGIK & DATENABRUF ---
 @st.cache_data(ttl=900)
 def lade_preisdaten():
-    heute = datetime.date.today()
+    heute = datetime.datetime.now(TZ_BERLIN).date()
     morgen = heute + datetime.timedelta(days=1)
     timestamps, prices = [], []
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -79,7 +83,7 @@ def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_s
         return None, 0
         
     for i in range(len(timestamps) - feste_block_groesse + 1):
-        dt = datetime.datetime.fromtimestamp(timestamps[i])
+        dt = datetime.datetime.fromtimestamp(timestamps[i], tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
         h = dt.hour
         
         if start_stunde == 0 and end_stunde == 24:
@@ -138,7 +142,7 @@ else:
                     )
                     
                     if bestes_ts:
-                        start_dt = datetime.datetime.fromtimestamp(bestes_ts)
+                        start_dt = datetime.datetime.fromtimestamp(bestes_ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
                         end_dt = start_dt + datetime.timedelta(hours=benoetigte_stunden)
                         preis = berechne_tibber_preis(schnitt_boerse / 10)
                         
