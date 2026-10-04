@@ -75,7 +75,14 @@ def finde_guenstigstes_fenster(timestamps, prices, start_stunde, end_stunde, blo
         
     for i in range(len(timestamps) - block_groesse + 1):
         h = datetime.datetime.fromtimestamp(timestamps[i]).hour
-        im_bereich = (start_stunde <= h < end_stunde) if start_stunde < end_stunde else (h >= start_stunde or h < end_stunde)
+        
+        # Sonderfall für ganzer Tag (0 bis 24 Uhr)
+        if start_stunde == 0 and end_stunde == 24:
+            im_bereich = True
+        elif start_stunde < end_stunde:
+            im_bereich = (start_stunde <= h < end_stunde)
+        else:
+            im_bereich = (h >= start_stunde or h < end_stunde)
             
         if im_bereich:
             schnitt = sum(prices[i:i + block_groesse]) / block_groesse
@@ -92,10 +99,12 @@ if not timestamps:
 else:
     st.caption(f"**{fahrzeug}** | Stand: **{aktueller_soc:.0f}%**")
 
+    # Aktualisierte Kategorien (Ganzer Tag erfasst die absolute Talsohle)
     kategorien = {
+        "🚀 Absolut günstigste Zeit (00 - 24 Uhr)": (0, 24),
         "🌙 Nacht (22 - 06 Uhr)": (22, 6),
-        "🌆 Abend (17 - 22 Uhr)": (17, 22),
-        "☀️ Tag (06 - 17 Uhr)": (6, 17)
+        "☀️ Tag & Nachmittag (06 - 20 Uhr)": (6, 20),
+        "🌆 Abend (17 - 22 Uhr)": (17, 22)
     }
 
     for kat_name, (von, bis) in kategorien.items():
