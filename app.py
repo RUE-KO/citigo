@@ -11,15 +11,26 @@ st.set_page_config(
 )
 
 st.markdown("""
+  # Schlankeres Layout & 2-Spalten-Zwang für Mobilgeräte via CSS
+st.markdown("""
     <style>
         .block-container {padding-top: 1.5rem; padding-bottom: 2rem;}
-        div[data-testid="stMetricValue"] {font-size: 1.1rem !important;}
-        div[data-testid="stMetricLabel"] {font-size: 0.8rem !important;}
+        div[data-testid="stMetricValue"] {font-size: 1.0rem !important;}
+        div[data-testid="stMetricLabel"] {font-size: 0.75rem !important;}
+        
+        /* Erzwingt 2 Spalten nebeneinander auch auf Mobilgeräten */
+        [data-testid="stHorizontalBlock"] {
+            display: flex !important;
+            flex-direction: row !important;
+            flex-wrap: nowrap !important;
+            gap: 0.5rem !important;
+        }
+        [data-testid="stHorizontalBlock"] > div {
+            width: 50% !important;
+            min-width: 0 !important;
+        }
     </style>
 """, unsafe_allow_html=True)
-
-st.title("⚡ EV Ladeplaner")
-
 # Zeitzone für Deutschland festlegen (verhindert 2h Zeitversatz zu UTC)
 TZ_BERLIN = zoneinfo.ZoneInfo("Europe/Berlin")
 
