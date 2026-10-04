@@ -59,22 +59,23 @@ ladeleistung_kw = st.sidebar.number_input("Ladeleistung (kW)", value=default_kw,
 # --- LOGIK & DATENABRUF ---
 @st.cache_data(ttl=300)
 def lade_preisdaten():
-    # Einfacher API-Aufruf ohne Datums-Parameter
     url = "https://api.energy-charts.info/price?bzn=DE-LU"
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     
     timestamps, prices = [], []
     morgen_verfuegbar = False
+    error_msg = None
 
     try:
         response = requests.get(url, headers=headers, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            if "unix_seconds" in data and "price" in data:
-                raw_ts = data["unix_seconds"]
-                raw_pr = data["price"]
-                
-                # Nur Daten ab Beginn des heutigen Tages behalten
+            
+            # API Struktur auslesen
+            raw_ts = data.get("unix_seconds", [])
+            raw_pr = data.get("price", [])
+            
+            if raw_ts and raw_pr:
                 heute_start_ts = datetime.datetime.now(TZ_BERLIN).replace(
                     hour=0, minute=0, second=0, microsecond=0
                 ).timestamp()
@@ -82,18 +83,21 @@ def lade_preisdaten():
                 morgen_date = (datetime.datetime.now(TZ_BERLIN) + datetime.timedelta(days=1)).date()
 
                 for ts, p in zip(raw_ts, raw_pr):
-                    if ts >= heute_start_ts:
+                    if ts >= heute_start_ts and p is not None:
                         timestamps.append(ts)
                         prices.append(p)
                         
-                        # Prüfen, ob schon Daten für morgen enthalten sind
                         dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
                         if dt.date() == morgen_date:
                             morgen_verfuegbar = True
+            else:
+                error_msg = f"API Antwort enthält keine Daten (keys: {list(data.keys())})"
+        else:
+            error_msg = f"API Statuscode: {response.status_code}"
     except Exception as e:
-        pass
+        error_msg = f"Netzwerk-/Verbindungsfehler: {str(e)}"
 
-    return timestamps, prices, morgen_verfuegbar
+    return timestamps, prices, morgen_verfuegbar, error_msg
 
 def berechne_tibber_preis(boerse_cent):
     fixkosten = 1.81 + 6.39 + 1.32 + 2.05 + 0.941 + 0.446 + 1.56
@@ -125,13 +129,16 @@ def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_s
                 
     return bestes_fenster, min_schnitt
 
-timestamps, prices, morgen_da = lade_preisdaten()
+timestamps, prices, morgen_da, err = lade_preisdaten()
+
+if err:
+    st.sidebar.error(f"Debug Info: {err}")
 
 if not morgen_da and len(timestamps) > 0:
     st.sidebar.info("ℹ️ Preise für morgen stehen erst ab ca. 13:00 Uhr bereit.")
 
 if not timestamps:
-    st.error("Keine Preisdaten verfügbar. Bitte versuche es in wenigen Augenblicken erneut.")
+    st.error("Keine Preisdaten verfügbar. Siehe Fehler in der Seitenleiste.")
 else:
     st.caption(f"**{fahrzeug}** | Akkustand: **{aktueller_soc:.0f}%**")
 
