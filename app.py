@@ -57,28 +57,40 @@ akkugroesse_netto = st.sidebar.number_input("Akkugröße Netto (kWh)", value=def
 ladeleistung_kw = st.sidebar.number_input("Ladeleistung (kW)", value=default_kw, step=0.1)
 
 # --- LOGIK & DATENABRUF ---
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=600)
 def lade_preisdaten():
     heute = datetime.datetime.now(TZ_BERLIN).date()
     morgen = heute + datetime.timedelta(days=1)
+    
     timestamps, prices = [], []
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     morgen_verfuegbar = False
 
-    for tag in [heute, morgen]:
-        url = f"https://api.energy-charts.info/price?bzn=DE-LU&start={tag.strftime('%Y-%m-%d')}"
-        try:
-            response = requests.get(url, headers=headers, timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                if "unix_seconds" in data and data["unix_seconds"] and len(data["unix_seconds"]) > 0:
-                    timestamps.extend(data["unix_seconds"])
-                    prices.extend(data["price"])
-                    if tag == morgen:
-                        morgen_verfuegbar = True
-        except Exception:
-            pass
-            
+    # 1. Heute abrufen (MUSS klappen)
+    url_heute = f"https://api.energy-charts.info/price?bzn=DE-LU&start={heute.strftime('%Y-%m-%d')}&end={heute.strftime('%Y-%m-%d')}"
+    try:
+        r1 = requests.get(url_heute, headers=headers, timeout=5)
+        if r1.status_code == 200:
+            d1 = r1.json()
+            if "unix_seconds" in d1 and d1["unix_seconds"]:
+                timestamps.extend(d1["unix_seconds"])
+                prices.extend(d1["price"])
+    except Exception:
+        pass
+
+    # 2. Morgen abrufen (Optional, falls schon da)
+    url_morgen = f"https://api.energy-charts.info/price?bzn=DE-LU&start={morgen.strftime('%Y-%m-%d')}&end={morgen.strftime('%Y-%m-%d')}"
+    try:
+        r2 = requests.get(url_morgen, headers=headers, timeout=5)
+        if r2.status_code == 200:
+            d2 = r2.json()
+            if "unix_seconds" in d2 and d2["unix_seconds"]:
+                timestamps.extend(d2["unix_seconds"])
+                prices.extend(d2["price"])
+                morgen_verfuegbar = True
+    except Exception:
+        pass
+
     return timestamps, prices, morgen_verfuegbar
 
 def berechne_tibber_preis(boerse_cent):
@@ -117,7 +129,7 @@ if not morgen_da and len(timestamps) > 0:
     st.sidebar.info("ℹ️ Preise für morgen stehen erst ab ca. 13:00 Uhr bereit.")
 
 if not timestamps:
-    st.error("Keine Preisdaten verfügbar. Bitte versuche es in wenigen Minuten erneut.")
+    st.error("Keine Preisdaten verfügbar. Bitte Seite in Kürze neu laden.")
 else:
     st.caption(f"**{fahrzeug}** | Akkustand: **{aktueller_soc:.0f}%**")
 
