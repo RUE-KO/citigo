@@ -10,8 +10,7 @@ st.set_page_config(
     layout="centered"
 )
 
-st.markdown("""
-  # Schlankeres Layout & 2-Spalten-Zwang für Mobilgeräte via CSS
+# Schlankeres Layout & 2-Spalten-Zwang für Mobilgeräte via CSS (sauber als String verpackt)
 st.markdown("""
     <style>
         .block-container {padding-top: 1.5rem; padding-bottom: 2rem;}
@@ -31,6 +30,9 @@ st.markdown("""
         }
     </style>
 """, unsafe_allow_html=True)
+
+st.title("⚡ EV Ladeplaner")
+
 # Zeitzone für Deutschland festlegen (verhindert 2h Zeitversatz zu UTC)
 TZ_BERLIN = zoneinfo.ZoneInfo("Europe/Berlin")
 
