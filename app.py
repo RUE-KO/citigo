@@ -55,10 +55,10 @@ aktueller_soc = st.sidebar.number_input(
 akkugroesse_netto = st.sidebar.number_input("Akkugröße Netto (kWh)", value=default_akku, step=0.1)
 ladeleistung_kw = st.sidebar.number_input("Ladeleistung (kW)", value=default_kw, step=0.1)
 
-# --- LOGIK & DATENABRUF (NORMIERT AUF CENT/KWH) ---
+# --- LOGIK & DATENABRUF ---
 @st.cache_data(ttl=300)
 def lade_preisdaten():
-    timestamps, prices_cent = [], []
+    raw_timestamps, raw_prices = [], []
     morgen_verfuegbar = False
     source_used = None
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -72,15 +72,14 @@ def lade_preisdaten():
             raw_ts = data.get("unix_seconds", [])
             raw_pr = data.get("price", []) # EUR / MWh
             if raw_ts and raw_pr:
-                timestamps = raw_ts
-                # Umrechnung EUR/MWh -> Cent/kWh (/ 10)
-                prices_cent = [p / 10.0 if p is not None else None for p in raw_pr]
+                raw_timestamps = raw_ts
+                raw_prices = [p / 10.0 if p is not None else None for p in raw_pr] # -> Cent/kWh
                 source_used = "Energy-Charts"
     except Exception:
         pass
 
     # 2. Awattar Fallback
-    if not timestamps:
+    if not raw_timestamps:
         try:
             jetzt_start = int(datetime.datetime.now(TZ_BERLIN).replace(hour=0, minute=0, second=0).timestamp() * 1000)
             url_awattar = f"https://api.awattar.de/v1/marketdata?start={jetzt_start}"
@@ -88,28 +87,30 @@ def lade_preisdaten():
             if res.status_code == 200:
                 data = res.json().get("data", [])
                 for eintrag in data:
-                    timestamps.append(int(eintrag["start_timestamp"] / 1000))
-                    # Awattar marketprice ist in EUR/MWh -> Cent/kWh (/ 10)
-                    prices_cent.append(eintrag["marketprice"] / 10.0)
+                    raw_timestamps.append(int(eintrag["start_timestamp"] / 1000))
+                    raw_prices.append(eintrag["marketprice"] / 10.0) # -> Cent/kWh
                 source_used = "Awattar"
         except Exception:
             pass
 
-    if timestamps:
+    if raw_timestamps:
         jetzt_ts = datetime.datetime.now(TZ_BERLIN).timestamp()
         morgen_date = (datetime.datetime.now(TZ_BERLIN) + datetime.timedelta(days=1)).date()
 
-        filtered_ts, filtered_pr = [], []
-        for ts, p in zip(timestamps, prices_cent):
+        # Stunden-Daten in exakte 15-Minuten-Blöcke aufspalten
+        ts_15m, prices_15m = [], []
+        for ts, p in zip(raw_timestamps, raw_prices):
             if ts + 3600 >= jetzt_ts and p is not None:
-                filtered_ts.append(ts)
-                filtered_pr.append(p)
-                
-                dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
-                if dt.date() == morgen_date:
-                    morgen_verfuegbar = True
+                for quarter in range(4):
+                    q_ts = ts + (quarter * 900)
+                    ts_15m.append(q_ts)
+                    prices_15m.append(p)
                     
-        return filtered_ts, filtered_pr, morgen_verfuegbar, source_used
+                    dt = datetime.datetime.fromtimestamp(q_ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
+                    if dt.date() == morgen_date:
+                        morgen_verfuegbar = True
+                    
+        return ts_15m, prices_15m, morgen_verfuegbar, source_used
 
     return [], [], False, None
 
@@ -117,18 +118,18 @@ def berechne_tibber_preis(boerse_cent):
     fixkosten = 1.81 + 6.39 + 1.32 + 2.05 + 0.941 + 0.446 + 1.56
     return (boerse_cent + fixkosten) * 1.19
 
-def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_stunde, feste_block_groesse):
+def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_stunde, anzahl_15m_bloecke):
     bestes_fenster, min_schnitt = None, float('inf')
     jetzt_ts = datetime.datetime.now(TZ_BERLIN).timestamp()
     
-    if len(timestamps) < feste_block_groesse:
+    if len(timestamps) < anzahl_15m_bloecke:
         return None, 0
         
-    for i in range(len(timestamps) - feste_block_groesse + 1):
+    for i in range(len(timestamps) - anzahl_15m_bloecke + 1):
         ts = timestamps[i]
         
-        # Nur zukünftige oder aktuell laufende Blöcke
-        if ts + 3600 < jetzt_ts:
+        # Abgelaufene Blöcke überspringen
+        if ts + 900 < jetzt_ts:
             continue
             
         dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
@@ -142,8 +143,8 @@ def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_s
             im_bereich = (h >= start_stunde or h < end_stunde)
             
         if im_bereich:
-            fenster_preise = prices[i:i + feste_block_groesse]
-            schnitt = sum(fenster_preise) / feste_block_groesse
+            fenster_preise = prices[i:i + anzahl_15m_bloecke]
+            schnitt = sum(fenster_preise) / anzahl_15m_bloecke
             if schnitt < min_schnitt:
                 min_schnitt = schnitt
                 bestes_fenster = ts
@@ -186,10 +187,12 @@ else:
                     benoetigte_prozent = ziel_soc - aktueller_soc
                     benoetigte_kwh = (benoetigte_prozent / 100.0) * akkugroesse_netto
                     benoetigte_stunden = benoetigte_kwh / ladeleistung_kw
-                    block_groesse = int(round((benoetigte_stunden / 0.25), 0))
+                    
+                    # Exakte Anzahl 15-Minuten-Häppchen
+                    anzahl_15m_bloecke = int(round((benoetigte_stunden / 0.25), 0))
                     
                     bestes_ts, schnitt_boerse = finde_guenstigstes_fenster_fuer_ziel(
-                        timestamps, prices, von, bis, block_groesse
+                        timestamps, prices, von, bis, anzahl_15m_bloecke
                     )
                     
                     if bestes_ts:
