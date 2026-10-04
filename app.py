@@ -5,16 +5,30 @@ import math
 
 # --- SEITEN-KONFIGURATION ---
 st.set_page_config(
-    page_title="Citigo Ladeplaner",
+    page_title="EV Ladeplaner",
     page_icon="⚡",
     layout="centered"
 )
 
-st.title("⚡ Citigo Ladeplaner")
-st.caption("Finde das günstigste Ladefenster für deinen Škoda Citigo e-iV auf Basis der Energy-Charts Preise.")
+st.title("⚡ EV Ladeplaner")
+st.caption("Finde das günstigste Ladefenster für deinen Škoda auf Basis der Energy-Charts Preise.")
 
 # --- SEITENLEISTE / EINGABEN ---
-st.sidebar.header("Einstellungen")
+st.sidebar.header("Fahrzeug & Einstellungen")
+
+# 1. Fahrzeug-Auswahl
+fahrzeug = st.sidebar.selectbox(
+    "Fahrzeug auswählen",
+    ["Škoda Citigo e-iV", "Škoda Enyaq"]
+)
+
+# 2. Standardwerte je nach Fahrzeug setzen
+if fahrzeug == "Škoda Citigo e-iV":
+    default_akku = 32.3
+    default_kw = 7.2
+else:  # Enyaq (Standard z. B. Enyaq 80 / 85)
+    default_akku = 77.0
+    default_kw = 11.0
 
 aktueller_soc = st.sidebar.number_input(
     "Aktueller Akkustand (%)",
@@ -26,13 +40,13 @@ aktueller_soc = st.sidebar.number_input(
 
 akkugroesse_netto = st.sidebar.number_input(
     "Akkugröße Netto (kWh)",
-    value=32.3,
+    value=default_akku,
     step=0.1
 )
 
 ladeleistung_kw = st.sidebar.number_input(
     "Ladeleistung (kW)",
-    value=7.2,
+    value=default_kw,
     step=0.1
 )
 
@@ -113,7 +127,7 @@ else:
 
     ziele = [80.0, 100.0]
 
-    st.subheader(f"Ergebnisse ab Akkustand: **{aktueller_soc:.0f}%**")
+    st.subheader(f"Ergebnisse für **{fahrzeug}** (Start bei {aktueller_soc:.0f}%)")
 
     for kategorie_name, (von, bis) in kategorien.items():
         with st.expander(kategorie_name, expanded=True):
@@ -140,12 +154,12 @@ else:
                     st.markdown(f"### 🎯 Ziel {int(ziel_soc)}%")
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.metric("Ladefenster", f"{start_dt.strftime('%d.%m. %H:%M')} - {end_dt.strftime('%H:%M')}")
+                        st.metric("Ladefenster", f"{start_dt.strftime('%d.%m. %H:%M')} - {end_dt.strftime('%d.%m. %H:%M')}")
                         st.write(f"⏱️ **Dauer:** {benötigte_stunden*60:.0f} Min (~{benötigte_kwh:.1f} kWh)")
                     with col2:
                         st.metric("Geschätzter Preis", f"~{tibber_brutto:.2f} ct/kWh")
                     
-                    st.success(f"👉 **Im Citigo einstellen:** Abfahrtszeit **{end_dt.strftime('%H:%M')} Uhr** & Ladelimit **{ziel_soc_10}%**")
+                    st.success(f"👉 **Im {fahrzeug} einstellen:** Abfahrtszeit **{end_dt.strftime('%d.%m. um %H:%M')} Uhr** & Ladelimit **{ziel_soc_10}%**")
                     st.divider()
                 else:
-                    st.warning(f"🎯 **Ziel {int(ziel_soc)}%**: Kein passendes Zeitfenster gefunden.")
+                    st.warning(f"🎯 **Ziel {int(ziel_soc)}%**: Kein passendes Zeitfenster gefunden (Fenster zu kurz für benötigte Ladezeit).")
