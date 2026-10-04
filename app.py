@@ -55,16 +55,15 @@ aktueller_soc = st.sidebar.number_input(
 akkugroesse_netto = st.sidebar.number_input("Akkugröße Netto (kWh)", value=default_akku, step=0.1)
 ladeleistung_kw = st.sidebar.number_input("Ladeleistung (kW)", value=default_kw, step=0.1)
 
-# --- LOGIK & DATENABRUF MIT FALLBACK ---
+# --- LOGIK & DATENABRUF ---
 @st.cache_data(ttl=300)
 def lade_preisdaten():
     timestamps, prices = [], []
     morgen_verfuegbar = False
     source_used = None
-    
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
-    # PROBE 1: Energy-Charts API
+    # 1. Energy-Charts
     try:
         url = "https://api.energy-charts.info/price?bzn=DE-LU"
         res = requests.get(url, headers=headers, timeout=5)
@@ -73,13 +72,12 @@ def lade_preisdaten():
             raw_ts = data.get("unix_seconds", [])
             raw_pr = data.get("price", [])
             if raw_ts and raw_pr:
-                timestamps = raw_ts
-                prices = raw_pr
+                timestamps, prices = raw_ts, raw_pr
                 source_used = "Energy-Charts"
     except Exception:
         pass
 
-    # PROBE 2: Awattar API (Fallback)
+    # 2. Awattar Fallback
     if not timestamps:
         try:
             jetzt_start = int(datetime.datetime.now(TZ_BERLIN).replace(hour=0, minute=0, second=0).timestamp() * 1000)
@@ -89,23 +87,19 @@ def lade_preisdaten():
                 data = res.json().get("data", [])
                 for eintrag in data:
                     timestamps.append(int(eintrag["start_timestamp"] / 1000))
-                    # Awattar liefert Eur/MWh -> Umrechnung in EUR/MWh für Konsistenz
                     prices.append(eintrag["marketprice"])
                 source_used = "Awattar"
         except Exception:
             pass
 
-    # Filter auf Daten ab heute 00:00 Uhr
     if timestamps:
-        heute_start_ts = datetime.datetime.now(TZ_BERLIN).replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ).timestamp()
-
+        jetzt_ts = datetime.datetime.now(TZ_BERLIN).timestamp()
         morgen_date = (datetime.datetime.now(TZ_BERLIN) + datetime.timedelta(days=1)).date()
 
         filtered_ts, filtered_pr = [], []
         for ts, p in zip(timestamps, prices):
-            if ts >= heute_start_ts and p is not None:
+            # Nur Daten behalten, die nicht älter als 1 Stunde sind
+            if ts + 3600 >= jetzt_ts and p is not None:
                 filtered_ts.append(ts)
                 filtered_pr.append(p)
                 
@@ -118,19 +112,25 @@ def lade_preisdaten():
     return [], [], False, None
 
 def berechne_tibber_preis(boerse_eur_mwh):
-    # Börsenpreis in ct/kWh umrechnen (EUR/MWh durch 10)
     boerse_cent = boerse_eur_mwh / 10.0
     fixkosten = 1.81 + 6.39 + 1.32 + 2.05 + 0.941 + 0.446 + 1.56
     return (boerse_cent + fixkosten) * 1.19
 
 def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_stunde, feste_block_groesse):
     bestes_fenster, min_schnitt = None, float('inf')
+    jetzt_ts = datetime.datetime.now(TZ_BERLIN).timestamp()
     
     if len(timestamps) < feste_block_groesse:
         return None, 0
         
     for i in range(len(timestamps) - feste_block_groesse + 1):
-        dt = datetime.datetime.fromtimestamp(timestamps[i], tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
+        ts = timestamps[i]
+        
+        # VERGANGENE ZEITEN IGNORIEREN: Startzeitpunkt muss in der Zukunft/Gegenwart liegen
+        if ts + 900 < jetzt_ts:
+            continue
+            
+        dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
         h = dt.hour
         
         if start_stunde == 0 and end_stunde == 24:
@@ -145,7 +145,7 @@ def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_s
             schnitt = sum(fenster_preise) / feste_block_groesse
             if schnitt < min_schnitt:
                 min_schnitt = schnitt
-                bestes_fenster = timestamps[i]
+                bestes_fenster = ts
                 
     return bestes_fenster, min_schnitt
 
