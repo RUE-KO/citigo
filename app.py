@@ -10,7 +10,6 @@ st.set_page_config(
     layout="centered"
 )
 
-# Schlankeres Layout & 2-Spalten-Zwang für Mobilgeräte
 st.markdown("""
     <style>
         .block-container {padding-top: 1.5rem; padding-bottom: 2rem;}
@@ -56,50 +55,71 @@ aktueller_soc = st.sidebar.number_input(
 akkugroesse_netto = st.sidebar.number_input("Akkugröße Netto (kWh)", value=default_akku, step=0.1)
 ladeleistung_kw = st.sidebar.number_input("Ladeleistung (kW)", value=default_kw, step=0.1)
 
-# --- LOGIK & DATENABRUF ---
+# --- LOGIK & DATENABRUF MIT FALLBACK ---
 @st.cache_data(ttl=300)
 def lade_preisdaten():
-    url = "https://api.energy-charts.info/price?bzn=DE-LU"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-    
     timestamps, prices = [], []
     morgen_verfuegbar = False
-    error_msg = None
+    source_used = None
+    
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
+    # PROBE 1: Energy-Charts API
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            
-            # API Struktur auslesen
+        url = "https://api.energy-charts.info/price?bzn=DE-LU"
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
             raw_ts = data.get("unix_seconds", [])
             raw_pr = data.get("price", [])
-            
             if raw_ts and raw_pr:
-                heute_start_ts = datetime.datetime.now(TZ_BERLIN).replace(
-                    hour=0, minute=0, second=0, microsecond=0
-                ).timestamp()
+                timestamps = raw_ts
+                prices = raw_pr
+                source_used = "Energy-Charts"
+    except Exception:
+        pass
 
-                morgen_date = (datetime.datetime.now(TZ_BERLIN) + datetime.timedelta(days=1)).date()
+    # PROBE 2: Awattar API (Fallback)
+    if not timestamps:
+        try:
+            jetzt_start = int(datetime.datetime.now(TZ_BERLIN).replace(hour=0, minute=0, second=0).timestamp() * 1000)
+            url_awattar = f"https://api.awattar.de/v1/marketdata?start={jetzt_start}"
+            res = requests.get(url_awattar, headers=headers, timeout=5)
+            if res.status_code == 200:
+                data = res.json().get("data", [])
+                for eintrag in data:
+                    timestamps.append(int(eintrag["start_timestamp"] / 1000))
+                    # Awattar liefert Eur/MWh -> Umrechnung in EUR/MWh für Konsistenz
+                    prices.append(eintrag["marketprice"])
+                source_used = "Awattar"
+        except Exception:
+            pass
 
-                for ts, p in zip(raw_ts, raw_pr):
-                    if ts >= heute_start_ts and p is not None:
-                        timestamps.append(ts)
-                        prices.append(p)
-                        
-                        dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
-                        if dt.date() == morgen_date:
-                            morgen_verfuegbar = True
-            else:
-                error_msg = f"API Antwort enthält keine Daten (keys: {list(data.keys())})"
-        else:
-            error_msg = f"API Statuscode: {response.status_code}"
-    except Exception as e:
-        error_msg = f"Netzwerk-/Verbindungsfehler: {str(e)}"
+    # Filter auf Daten ab heute 00:00 Uhr
+    if timestamps:
+        heute_start_ts = datetime.datetime.now(TZ_BERLIN).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).timestamp()
 
-    return timestamps, prices, morgen_verfuegbar, error_msg
+        morgen_date = (datetime.datetime.now(TZ_BERLIN) + datetime.timedelta(days=1)).date()
 
-def berechne_tibber_preis(boerse_cent):
+        filtered_ts, filtered_pr = [], []
+        for ts, p in zip(timestamps, prices):
+            if ts >= heute_start_ts and p is not None:
+                filtered_ts.append(ts)
+                filtered_pr.append(p)
+                
+                dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
+                if dt.date() == morgen_date:
+                    morgen_verfuegbar = True
+                    
+        return filtered_ts, filtered_pr, morgen_verfuegbar, source_used
+
+    return [], [], False, None
+
+def berechne_tibber_preis(boerse_eur_mwh):
+    # Börsenpreis in ct/kWh umrechnen (EUR/MWh durch 10)
+    boerse_cent = boerse_eur_mwh / 10.0
     fixkosten = 1.81 + 6.39 + 1.32 + 2.05 + 0.941 + 0.446 + 1.56
     return (boerse_cent + fixkosten) * 1.19
 
@@ -129,17 +149,17 @@ def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_s
                 
     return bestes_fenster, min_schnitt
 
-timestamps, prices, morgen_da, err = lade_preisdaten()
-
-if err:
-    st.sidebar.error(f"Debug Info: {err}")
-
-if not morgen_da and len(timestamps) > 0:
-    st.sidebar.info("ℹ️ Preise für morgen stehen erst ab ca. 13:00 Uhr bereit.")
+timestamps, prices, morgen_da, quelle = lade_preisdaten()
 
 if not timestamps:
-    st.error("Keine Preisdaten verfügbar. Siehe Fehler in der Seitenleiste.")
+    st.error("⚠️ Aktuell kann keine Preis-Schnittstelle erreicht werden. Bitte versuche es gleich erneut.")
 else:
+    if quelle:
+        st.sidebar.caption(f"Datenquelle: {quelle}")
+        
+    if not morgen_da:
+        st.sidebar.info("ℹ️ Preise für morgen stehen erst ab ca. 13:00 Uhr bereit.")
+
     st.caption(f"**{fahrzeug}** | Akkustand: **{aktueller_soc:.0f}%**")
 
     kategorien = {
@@ -174,7 +194,7 @@ else:
                     if bestes_ts:
                         start_dt = datetime.datetime.fromtimestamp(bestes_ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
                         end_dt = start_dt + datetime.timedelta(hours=benoetigte_stunden)
-                        preis = berechne_tibber_preis(schnitt_boerse / 10)
+                        preis = berechne_tibber_preis(schnitt_boerse)
                         
                         st.metric("Preis", f"~{preis:.2f} ct")
                         st.text(f"🕒 {start_dt.strftime('%d.%m. %H:%M')}\n   bis {end_dt.strftime('%H:%M')}")
