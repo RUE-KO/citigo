@@ -2,7 +2,6 @@ import streamlit as st
 import requests
 import datetime
 import zoneinfo
-import pandas as pd
 
 # --- SEITEN-KONFIGURATION ---
 st.set_page_config(
@@ -11,7 +10,7 @@ st.set_page_config(
     layout="centered"
 )
 
-# Layout & Styling
+# 2-Spalten-Zwang für Mobilgeräte
 st.markdown("""
     <style>
         .block-container {padding-top: 1.5rem; padding-bottom: 2rem;}
@@ -36,7 +35,7 @@ st.title("⚡ EV Ladeplaner")
 TZ_BERLIN = zoneinfo.ZoneInfo("Europe/Berlin")
 TIBBER_TOKEN = st.secrets.get("TIBBER_TOKEN", "")
 
-# --- SEITENLEISTE ---
+# --- SEITENLEISTE / EINGABEN ---
 st.sidebar.header("Fahrzeug & Einstellungen")
 
 fahrzeug = st.sidebar.selectbox("Fahrzeug wählen", ["Škoda Citigo e-iV", "Škoda Enyaq"])
@@ -47,14 +46,18 @@ aktueller_soc = st.sidebar.number_input("Aktueller Akkustand (%)", min_value=0.0
 akkugroesse_netto = st.sidebar.number_input("Akkugröße Netto (kWh)", value=default_akku, step=0.1)
 ladeleistung_kw = st.sidebar.number_input("Realistische Ladeleistung (kW)", value=default_kw, step=0.1)
 
-# --- TIBBER DATENABRUF ---
+# --- TIBBER API DATENABRUF ---
 @st.cache_data(ttl=900)
 def lade_tibber_daten():
     if not TIBBER_TOKEN:
         return [], [], False, "Kein Token in den Streamlit Secrets gefunden."
 
     url = "https://api.tibber.com/v1-beta/gql"
-    headers = {"Authorization": f"Bearer {TIBBER_TOKEN}", "Content-Type": "application/json"}
+    headers = {
+        "Authorization": f"Bearer {TIBBER_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
     query = """
     {
       viewer {
@@ -82,7 +85,7 @@ def lade_tibber_daten():
                 
             homes = data.get("data", {}).get("viewer", {}).get("homes", [])
             if not homes:
-                return [], [], False, "Kein aktiver Tibber-Vertrag im Account gefunden."
+                return [], [], False, "Kein aktiver Tibber-Vertrag gefunden."
                 
             price_info = homes[0].get("currentSubscription", {}).get("priceInfo", {})
             raw_entries = price_info.get("today", []) or []
@@ -99,6 +102,7 @@ def lade_tibber_daten():
                 base_ts = int(dt.timestamp())
                 total_cent = eintrag["total"] * 100.0
                 
+                # Stunden auf 15-Minuten-Raster aufteilen
                 for q in range(4):
                     q_ts = base_ts + (q * 900)
                     if q_ts + 900 >= jetzt_ts:
@@ -111,7 +115,7 @@ def lade_tibber_daten():
     except Exception as e:
         return [], [], False, str(e)
 
-def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_stunde, anzahl_15m_bloecke):
+def finde_guenstigstes_fenster(timestamps, prices, start_stunde, end_stunde, anzahl_15m_bloecke, ziel_datum):
     bestes_fenster, min_schnitt = None, float('inf')
     jetzt_ts = datetime.datetime.now(TZ_BERLIN).timestamp()
     
@@ -120,12 +124,18 @@ def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_s
         
     for i in range(len(timestamps) - anzahl_15m_bloecke + 1):
         ts = timestamps[i]
+        
+        # Nur zukünftige Fenster
         if ts + 900 < jetzt_ts:
             continue
             
         dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
-        h = dt.hour
         
+        # Auf das gewünschte Datum filtern (Heute oder Morgen)
+        if dt.date() != ziel_datum:
+            continue
+
+        h = dt.hour
         if start_stunde == 0 and end_stunde == 24:
             im_bereich = True
         elif start_stunde < end_stunde:
@@ -142,6 +152,49 @@ def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_s
                 
     return bestes_fenster, min_schnitt
 
+def render_empfehlungen_fuer_tag(timestamps, prices, ziel_datum, aktueller_soc, akkugroesse_netto, ladeleistung_kw):
+    kategorien = {
+        "🚀 Absolut günstigste Zeit": (0, 24),
+        "☀️ Tag / Vormittag (06 - 17 Uhr)": (6, 17),
+        "🌙 Nacht (22 - 06 Uhr)": (22, 6),
+        "🌆 Abend (17 - 22 Uhr)": (17, 22)
+    }
+
+    benoetigte_prozent_80 = 80.0 - aktueller_soc
+    benoetigte_prozent_100 = 100.0 - aktueller_soc
+
+    for kat_name, (von, bis) in kategorien.items():
+        with st.expander(kat_name, expanded=True):
+            col80, col100 = st.columns(2)
+            
+            for idx, ziel_soc in enumerate([80.0, 100.0]):
+                spalte = col80 if idx == 0 else col100
+                
+                with spalte:
+                    st.markdown(f"**Ziel {int(ziel_soc)}%**")
+                    if aktueller_soc >= ziel_soc:
+                        st.caption("Bereits erreicht ✅")
+                        continue
+                        
+                    benoetigte_prozent = ziel_soc - aktueller_soc
+                    benoetigte_kwh = (benoetigte_prozent / 100.0) * akkugroesse_netto
+                    benoetigte_stunden = benoetigte_kwh / ladeleistung_kw
+                    anzahl_15m_bloecke = int(round((benoetigte_stunden / 0.25), 0))
+                    
+                    bestes_ts, schnitt_preis = finde_guenstigstes_fenster(
+                        timestamps, prices, von, bis, anzahl_15m_bloecke, ziel_datum
+                    )
+                    
+                    if bestes_ts:
+                        start_dt = datetime.datetime.fromtimestamp(bestes_ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
+                        end_dt = start_dt + datetime.timedelta(hours=benoetigte_stunden)
+                        
+                        st.metric("Preis", f"{schnitt_preis:.2f} ct")
+                        st.text(f"🕒 {start_dt.strftime('%H:%M')}\n   bis {end_dt.strftime('%H:%M')}")
+                        st.caption(f"⚙️ Abfahrt: **{end_dt.strftime('%H:%M')}**")
+                    else:
+                        st.caption("Kein Fenster ❌")
+
 timestamps, prices, morgen_da, err = lade_tibber_daten()
 
 if err:
@@ -149,85 +202,23 @@ if err:
 elif not timestamps:
     st.error("Keine Preisdaten verfügbar.")
 else:
-    if not morgen_da:
-        st.sidebar.info("ℹ️ Preise für morgen stehen ab ca. 13:00–13:30 Uhr bereit.")
+    heute_datum = datetime.datetime.now(TZ_BERLIN).date()
+    morgen_datum = heute_datum + datetime.timedelta(days=1)
 
     st.caption(f"**{fahrzeug}** | Akkustand: **{aktueller_soc:.0f}%**")
 
-    # MAIN TABS CREATION
-    tab_empfehlungen, tab_preise = st.tabs(["🎯 Lade-Empfehlungen", "📊 Strompreise (Heute/Morgen)"])
+    # TAB-TRENUNG FÜR HEUTE UND MORGEN
+    tab_heute, tab_morgen = st.tabs(["📅 Heute", "📅 Morgen"])
 
-    # --- TAB 1: EMPFEHLUNGEN ---
-    with tab_empfehlungen:
-        kategorien = {
-            "🚀 Absolut günstigste Zeit": (0, 24),
-            "☀️ Tag / Vormittag (06 - 17 Uhr)": (6, 17),
-            "🌙 Nacht (22 - 06 Uhr)": (22, 6),
-            "🌆 Abend (17 - 22 Uhr)": (17, 22)
-        }
+    with tab_heute:
+        render_empfehlungen_fuer_tag(
+            timestamps, prices, heute_datum, aktueller_soc, akkugroesse_netto, ladeleistung_kw
+        )
 
-        for kat_name, (von, bis) in kategorien.items():
-            with st.expander(kat_name, expanded=True):
-                col80, col100 = st.columns(2)
-                
-                for idx, ziel_soc in enumerate([80.0, 100.0]):
-                    spalte = col80 if idx == 0 else col100
-                    
-                    with spalte:
-                        st.markdown(f"**Ziel {int(ziel_soc)}%**")
-                        if aktueller_soc >= ziel_soc:
-                            st.caption("Bereits erreicht ✅")
-                            continue
-                            
-                        benoetigte_prozent = ziel_soc - aktueller_soc
-                        benoetigte_kwh = (benoetigte_prozent / 100.0) * akkugroesse_netto
-                        benoetigte_stunden = benoetigte_kwh / ladeleistung_kw
-                        anzahl_15m_bloecke = int(round((benoetigte_stunden / 0.25), 0))
-                        
-                        bestes_ts, schnitt_preis = finde_guenstigstes_fenster_fuer_ziel(
-                            timestamps, prices, von, bis, anzahl_15m_bloecke
-                        )
-                        
-                        if bestes_ts:
-                            start_dt = datetime.datetime.fromtimestamp(bestes_ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
-                            end_dt = start_dt + datetime.timedelta(hours=benoetigte_stunden)
-                            
-                            st.metric("Preis", f"{schnitt_preis:.2f} ct")
-                            st.text(f"🕒 {start_dt.strftime('%d.%m. %H:%M')}\n   bis {end_dt.strftime('%H:%M')}")
-                            st.caption(f"⚙️ Abfahrt: **{end_dt.strftime('%H:%M')}**")
-                        else:
-                            st.caption("Kein Fenster ❌")
-
-    # --- TAB 2: DIREKTE PREISEINSEHEN ---
-    with tab_preise:
-        # Preistabelle vorbereiten
-        df_data = []
-        for ts, p in zip(timestamps, prices):
-            dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
-            df_data.append({
-                "Datum": dt.strftime("%d.%m.%Y"),
-                "Uhrzeit": dt.strftime("%H:%M"),
-                "Preis (ct/kWh)": round(p, 2),
-                "Datum_Objekt": dt.date()
-            })
-
-        df = pd.DataFrame(df_data)
-        
-        heute_datum = datetime.datetime.now(TZ_BERLIN).date()
-        morgen_datum = heute_datum + datetime.timedelta(days=1)
-
-        tab_heute, tab_morgen = st.tabs(["Heute", "Morgen"])
-
-        with tab_heute:
-            df_heute = df[df["Datum_Objekt"] == heute_datum].drop(columns=["Datum_Objekt"])
-            if not df_heute.empty:
-                st.dataframe(df_heute, use_container_width=True, hide_index=True)
-            else:
-                st.info("Keine Daten für heute mehr verfügbar.")
-
-        with tab_morgen:
-            df_morgen = df[df["Datum_Objekt"] == morgen_datum].drop(columns=["Datum_Objekt"])
-            if not df_morgen.empty:
-                st.dataframe(df_morgen, use_container_width=True, hide_index=True)
-            else:
-                st.info("ℹ️ Preise für morgen sind noch nicht freigeschaltet (erst ab ca. 13:00–13:30 Uhr).")
+    with tab_morgen:
+        if morgen_da:
+            render_empfehlungen_fuer_tag(
+                timestamps, prices, morgen_datum, aktueller_soc, akkugroesse_netto, ladeleistung_kw
+            )
+        else:
+            st.info("ℹ️ Die Empfehlungen für morgen stehen erst ab ca. 13:00–13:30 Uhr zur Verfügung, wenn Tibber die neuen Börsenpreise freischaltet.")
