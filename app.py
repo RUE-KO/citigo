@@ -12,7 +12,7 @@ st.set_page_config(
 st.markdown("""
     <style>
         .block-container {padding-top: 1.5rem; padding-bottom: 2rem;}
-        div[data-testid="stMetricValue"] {font-size: 1.2rem !important;}
+        div[data-testid="stMetricValue"] {font-size: 1.1rem !important;}
         div[data-testid="stMetricLabel"] {font-size: 0.8rem !important;}
     </style>
 """, unsafe_allow_html=True)
@@ -46,8 +46,9 @@ ladeleistung_kw = st.sidebar.number_input("Ladeleistung (kW)", value=default_kw,
 def lade_preisdaten():
     heute = datetime.date.today()
     morgen = heute + datetime.timedelta(days=1)
-    raw_timestamps, raw_prices = [], []
+    timestamps, prices = [], []
     headers = {'User-Agent': 'Mozilla/5.0'}
+    morgen_verfuegbar = True
 
     for tag in [heute, morgen]:
         url = f"https://api.energy-charts.info/price?bzn=DE-LU&start={tag.strftime('%Y-%m-%d')}"
@@ -56,100 +57,93 @@ def lade_preisdaten():
             if response.status_code == 200:
                 data = response.json()
                 if "unix_seconds" in data and data["unix_seconds"]:
-                    raw_timestamps.extend(data["unix_seconds"])
-                    raw_prices.extend(data["price"])
+                    timestamps.extend(data["unix_seconds"])
+                    prices.extend(data["price"])
+            else:
+                if tag == morgen:
+                    morgen_verfuegbar = False
         except Exception:
-            pass
-
-    # Preise auf exakte 15-Minuten-Raster aufspalten
-    ts_15min, prices_15min = [], []
-    for ts, p in zip(raw_timestamps, raw_prices):
-        for i in range(4):  # 4 x 15 Minuten pro Stunde
-            ts_15min.append(ts + (i * 900))
-            prices_15min.append(p)
-
-    return ts_15min, prices_15min
+            if tag == morgen:
+                morgen_verfuegbar = False
+            
+    return timestamps, prices, morgen_verfuegbar
 
 def berechne_tibber_preis(boerse_cent):
     fixkosten = 1.81 + 6.39 + 1.32 + 2.05 + 0.941 + 0.446 + 1.56
     return (boerse_cent + fixkosten) * 1.19
 
-def finde_guenstigstes_fenster(ts_list, price_list, start_stunde, end_stunde, anzahl_15min_bloecke):
+def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_stunde, feste_block_groesse):
     bestes_fenster, min_schnitt = None, float('inf')
-    jetzt_ts = datetime.datetime.now().timestamp()
-
-    if len(ts_list) < anzahl_15min_bloecke:
+    
+    if len(timestamps) < feste_block_groesse:
         return None, 0
-
-    for i in range(len(ts_list) - anzahl_15min_bloecke + 1):
-        start_ts = ts_list[i]
-
-        # 1. Bereits vergangene Fenster ignorieren
-        if start_ts < jetzt_ts:
-            continue
-
-        dt = datetime.datetime.fromtimestamp(start_ts)
+        
+    for i in range(len(timestamps) - feste_block_groesse + 1):
+        dt = datetime.datetime.fromtimestamp(timestamps[i])
         h = dt.hour
-
-        # 2. Zeitbereich prüfen
+        
         if start_stunde == 0 and end_stunde == 24:
             im_bereich = True
         elif start_stunde < end_stunde:
             im_bereich = (start_stunde <= h < end_stunde)
         else:
             im_bereich = (h >= start_stunde or h < end_stunde)
-
+            
         if im_bereich:
-            schnitt = sum(price_list[i : i + anzahl_15min_bloecke]) / anzahl_15min_bloecke
+            fenster_preise = prices[i:i + feste_block_groesse]
+            schnitt = sum(fenster_preise) / feste_block_groesse
             if schnitt < min_schnitt:
                 min_schnitt = schnitt
-                bestes_fenster = start_ts
-
+                bestes_fenster = timestamps[i]
+                
     return bestes_fenster, min_schnitt
 
-ts_15min, prices_15min = lade_preisdaten()
+timestamps, prices, morgen_da = lade_preisdaten()
 
-if not ts_15min:
+if not morgen_da:
+    st.sidebar.info("ℹ️ Preise für morgen stehen erst ab ca. 13:00 Uhr bereit.")
+
+if not timestamps:
     st.error("Keine Preisdaten verfügbar.")
 else:
-    st.caption(f"**{fahrzeug}** | Stand: **{aktueller_soc:.0f}%**")
+    st.caption(f"**{fahrzeug}** | Akkustand: **{aktueller_soc:.0f}%**")
 
     kategorien = {
-        "🚀 Absolut günstigste Zeit (Nächste 24h)": (0, 24),
+        "🚀 Absolut günstigste Zeit": (0, 24),
+        "☀️ Tag / Vormittag (06 - 17 Uhr)": (6, 17),
         "🌙 Nacht (22 - 06 Uhr)": (22, 6),
-        "☀️ Tag & Nachmittag (06 - 20 Uhr)": (6, 20)
+        "🌆 Abend (17 - 22 Uhr)": (17, 22)
     }
 
     for kat_name, (von, bis) in kategorien.items():
         with st.expander(kat_name, expanded=True):
             col80, col100 = st.columns(2)
-
+            
             for idx, ziel_soc in enumerate([80.0, 100.0]):
                 spalte = col80 if idx == 0 else col100
-
+                
                 with spalte:
                     st.markdown(f"**Ziel {int(ziel_soc)}%**")
                     if aktueller_soc >= ziel_soc:
                         st.caption("Bereits erreicht ✅")
                         continue
-
-                    benoetigte_kwh = ((ziel_soc - aktueller_soc) / 100.0) * akkugroesse_netto
+                        
+                    benoetigte_prozent = ziel_soc - aktueller_soc
+                    benoetigte_kwh = (benoetigte_prozent / 100.0) * akkugroesse_netto
                     benoetigte_stunden = benoetigte_kwh / ladeleistung_kw
-
-                    # Genau berechnen, wie viele 15-Minuten-Blöcke gebraucht werden
-                    anzahl_15min = max(1, int(round(benoetigte_stunden * 4)))
-
-                    bestes_ts, schnitt_boerse = finde_guenstigstes_fenster(
-                        ts_15min, prices_15min, von, bis, anzahl_15min
+                    block_groesse = int(round((benoetigte_stunden / 0.25), 0))
+                    
+                    bestes_ts, schnitt_boerse = finde_guenstigstes_fenster_fuer_ziel(
+                        timestamps, prices, von, bis, block_groesse
                     )
-
+                    
                     if bestes_ts:
                         start_dt = datetime.datetime.fromtimestamp(bestes_ts)
-                        end_dt = start_dt + datetime.timedelta(minutes=anzahl_15min * 15)
+                        end_dt = start_dt + datetime.timedelta(hours=benoetigte_stunden)
                         preis = berechne_tibber_preis(schnitt_boerse / 10)
-
-                        st.metric("Preis", f"~{preis:.1f} ct")
+                        
+                        st.metric("Preis", f"~{preis:.2f} ct")
                         st.text(f"🕒 {start_dt.strftime('%d.%m. %H:%M')}\n   bis {end_dt.strftime('%H:%M')}")
-                        st.caption(f"⚙ Abfahrt: **{end_dt.strftime('%H:%M')}**")
+                        st.caption(f"⚙️ Abfahrt: **{end_dt.strftime('%H:%M')}**")
                     else:
-                        st.caption("Kein Fenster verfügbar ❌")
+                        st.caption("Kein Fenster ❌")
