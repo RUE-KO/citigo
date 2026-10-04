@@ -35,7 +35,7 @@ aktueller_soc = st.sidebar.number_input(
     "Aktueller Akkustand (%)",
     min_value=0.0,
     max_value=100.0,
-    value=40.0,
+    value=60.0,
     step=5.0
 )
 
@@ -43,7 +43,7 @@ akkugroesse_netto = st.sidebar.number_input("Akkugröße Netto (kWh)", value=def
 ladeleistung_kw = st.sidebar.number_input("Ladeleistung (kW)", value=default_kw, step=0.1)
 
 # --- LOGIK & DATENABRUF ---
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=900)  # Alle 15 Min aktualisieren
 def lade_preisdaten():
     heute = datetime.date.today()
     morgen = heute + datetime.timedelta(days=1)
@@ -70,13 +70,22 @@ def berechne_tibber_preis(boerse_cent):
 
 def finde_guenstigstes_fenster(timestamps, prices, start_stunde, end_stunde, block_groesse):
     bestes_fenster, min_schnitt = None, float('inf')
+    jetzt_ts = datetime.datetime.now().timestamp()
+    
     if len(timestamps) < block_groesse:
         return None, 0
         
     for i in range(len(timestamps) - block_groesse + 1):
-        h = datetime.datetime.fromtimestamp(timestamps[i]).hour
+        ts = timestamps[i]
         
-        # Sonderfall für ganzer Tag (0 bis 24 Uhr)
+        # 1. Vergangene Zeiten ignorieren
+        if ts + (block_groesse * 900) < jetzt_ts:
+            continue
+            
+        dt = datetime.datetime.fromtimestamp(ts)
+        h = dt.hour
+        
+        # 2. Prüfen, ob der Startstundenbereich passt
         if start_stunde == 0 and end_stunde == 24:
             im_bereich = True
         elif start_stunde < end_stunde:
@@ -88,7 +97,7 @@ def finde_guenstigstes_fenster(timestamps, prices, start_stunde, end_stunde, blo
             schnitt = sum(prices[i:i + block_groesse]) / block_groesse
             if schnitt < min_schnitt:
                 min_schnitt = schnitt
-                bestes_fenster = timestamps[i]
+                bestes_fenster = ts
                 
     return bestes_fenster, min_schnitt
 
@@ -99,12 +108,10 @@ if not timestamps:
 else:
     st.caption(f"**{fahrzeug}** | Stand: **{aktueller_soc:.0f}%**")
 
-    # Aktualisierte Kategorien (Ganzer Tag erfasst die absolute Talsohle)
     kategorien = {
-        "🚀 Absolut günstigste Zeit (00 - 24 Uhr)": (0, 24),
+        "🚀 Absolut günstigste Zeit (Nächste 24h)": (0, 24),
         "🌙 Nacht (22 - 06 Uhr)": (22, 6),
-        "☀️ Tag & Nachmittag (06 - 20 Uhr)": (6, 20),
-        "🌆 Abend (17 - 22 Uhr)": (17, 22)
+        "☀️ Tag & Nachmittag (06 - 20 Uhr)": (6, 20)
     }
 
     for kat_name, (von, bis) in kategorien.items():
@@ -122,7 +129,8 @@ else:
                         
                     benoetigte_kwh = ((ziel_soc - aktueller_soc) / 100.0) * akkugroesse_netto
                     benoetigte_stunden = benoetigte_kwh / ladeleistung_kw
-                    block_groesse = int(round((benoetigte_stunden / 0.25), 0))
+                    # Blockgröße in 15-Minuten-Abschnitten
+                    block_groesse = max(1, int(round((benoetigte_stunden * 4), 0)))
                     
                     bestes_ts, schnitt_boerse = finde_guenstigstes_fenster(timestamps, prices, von, bis, block_groesse)
                     
@@ -133,6 +141,6 @@ else:
                         
                         st.metric("Preis", f"~{preis:.1f} ct")
                         st.text(f"🕒 {start_dt.strftime('%d.%m. %H:%M')}\n   bis {end_dt.strftime('%H:%M')}")
-                        st.caption(f"⚙️ Abfahrt: **{end_dt.strftime('%H:%M')}**")
+                        st.caption(f"⚙️️ Abfahrt: **{end_dt.strftime('%H:%M')}**")
                     else:
-                        st.caption("Fenster zu kurz ❌")
+                        st.caption("Kein Fenster verfügbar ❌")
