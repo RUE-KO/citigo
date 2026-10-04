@@ -9,7 +9,6 @@ st.set_page_config(
     layout="centered"
 )
 
-# Schlankeres Layout für Mobilgeräte via CSS
 st.markdown("""
     <style>
         .block-container {padding-top: 1.5rem; padding-bottom: 2rem;}
@@ -43,11 +42,11 @@ akkugroesse_netto = st.sidebar.number_input("Akkugröße Netto (kWh)", value=def
 ladeleistung_kw = st.sidebar.number_input("Ladeleistung (kW)", value=default_kw, step=0.1)
 
 # --- LOGIK & DATENABRUF ---
-@st.cache_data(ttl=900)  # Alle 15 Min aktualisieren
+@st.cache_data(ttl=900)
 def lade_preisdaten():
     heute = datetime.date.today()
     morgen = heute + datetime.timedelta(days=1)
-    timestamps, prices = [], []
+    raw_timestamps, raw_prices = [], []
     headers = {'User-Agent': 'Mozilla/5.0'}
 
     for tag in [heute, morgen]:
@@ -57,53 +56,60 @@ def lade_preisdaten():
             if response.status_code == 200:
                 data = response.json()
                 if "unix_seconds" in data and data["unix_seconds"]:
-                    timestamps.extend(data["unix_seconds"])
-                    prices.extend(data["price"])
+                    raw_timestamps.extend(data["unix_seconds"])
+                    raw_prices.extend(data["price"])
         except Exception:
             pass
-            
-    return timestamps, prices
+
+    # Preise auf exakte 15-Minuten-Raster aufspalten
+    ts_15min, prices_15min = [], []
+    for ts, p in zip(raw_timestamps, raw_prices):
+        for i in range(4):  # 4 x 15 Minuten pro Stunde
+            ts_15min.append(ts + (i * 900))
+            prices_15min.append(p)
+
+    return ts_15min, prices_15min
 
 def berechne_tibber_preis(boerse_cent):
     fixkosten = 1.81 + 6.39 + 1.32 + 2.05 + 0.941 + 0.446 + 1.56
     return (boerse_cent + fixkosten) * 1.19
 
-def finde_guenstigstes_fenster(timestamps, prices, start_stunde, end_stunde, block_groesse):
+def finde_guenstigstes_fenster(ts_list, price_list, start_stunde, end_stunde, anzahl_15min_bloecke):
     bestes_fenster, min_schnitt = None, float('inf')
     jetzt_ts = datetime.datetime.now().timestamp()
-    
-    if len(timestamps) < block_groesse:
+
+    if len(ts_list) < anzahl_15min_bloecke:
         return None, 0
-        
-    for i in range(len(timestamps) - block_groesse + 1):
-        ts = timestamps[i]
-        
-        # 1. Vergangene Zeiten ignorieren
-        if ts + (block_groesse * 900) < jetzt_ts:
+
+    for i in range(len(ts_list) - anzahl_15min_bloecke + 1):
+        start_ts = ts_list[i]
+
+        # 1. Bereits vergangene Fenster ignorieren
+        if start_ts < jetzt_ts:
             continue
-            
-        dt = datetime.datetime.fromtimestamp(ts)
+
+        dt = datetime.datetime.fromtimestamp(start_ts)
         h = dt.hour
-        
-        # 2. Prüfen, ob der Startstundenbereich passt
+
+        # 2. Zeitbereich prüfen
         if start_stunde == 0 and end_stunde == 24:
             im_bereich = True
         elif start_stunde < end_stunde:
             im_bereich = (start_stunde <= h < end_stunde)
         else:
             im_bereich = (h >= start_stunde or h < end_stunde)
-            
+
         if im_bereich:
-            schnitt = sum(prices[i:i + block_groesse]) / block_groesse
+            schnitt = sum(price_list[i : i + anzahl_15min_bloecke]) / anzahl_15min_bloecke
             if schnitt < min_schnitt:
                 min_schnitt = schnitt
-                bestes_fenster = ts
-                
+                bestes_fenster = start_ts
+
     return bestes_fenster, min_schnitt
 
-timestamps, prices = lade_preisdaten()
+ts_15min, prices_15min = lade_preisdaten()
 
-if not timestamps:
+if not ts_15min:
     st.error("Keine Preisdaten verfügbar.")
 else:
     st.caption(f"**{fahrzeug}** | Stand: **{aktueller_soc:.0f}%**")
@@ -117,30 +123,33 @@ else:
     for kat_name, (von, bis) in kategorien.items():
         with st.expander(kat_name, expanded=True):
             col80, col100 = st.columns(2)
-            
+
             for idx, ziel_soc in enumerate([80.0, 100.0]):
                 spalte = col80 if idx == 0 else col100
-                
+
                 with spalte:
                     st.markdown(f"**Ziel {int(ziel_soc)}%**")
                     if aktueller_soc >= ziel_soc:
                         st.caption("Bereits erreicht ✅")
                         continue
-                        
+
                     benoetigte_kwh = ((ziel_soc - aktueller_soc) / 100.0) * akkugroesse_netto
                     benoetigte_stunden = benoetigte_kwh / ladeleistung_kw
-                    # Blockgröße in 15-Minuten-Abschnitten
-                    block_groesse = max(1, int(round((benoetigte_stunden * 4), 0)))
-                    
-                    bestes_ts, schnitt_boerse = finde_guenstigstes_fenster(timestamps, prices, von, bis, block_groesse)
-                    
+
+                    # Genau berechnen, wie viele 15-Minuten-Blöcke gebraucht werden
+                    anzahl_15min = max(1, int(round(benoetigte_stunden * 4)))
+
+                    bestes_ts, schnitt_boerse = finde_guenstigstes_fenster(
+                        ts_15min, prices_15min, von, bis, anzahl_15min
+                    )
+
                     if bestes_ts:
                         start_dt = datetime.datetime.fromtimestamp(bestes_ts)
-                        end_dt = start_dt + datetime.timedelta(hours=benoetigte_stunden)
+                        end_dt = start_dt + datetime.timedelta(minutes=anzahl_15min * 15)
                         preis = berechne_tibber_preis(schnitt_boerse / 10)
-                        
+
                         st.metric("Preis", f"~{preis:.1f} ct")
                         st.text(f"🕒 {start_dt.strftime('%d.%m. %H:%M')}\n   bis {end_dt.strftime('%H:%M')}")
-                        st.caption(f"⚙️️ Abfahrt: **{end_dt.strftime('%H:%M')}**")
+                        st.caption(f"⚙ Abfahrt: **{end_dt.strftime('%H:%M')}**")
                     else:
                         st.caption("Kein Fenster verfügbar ❌")
