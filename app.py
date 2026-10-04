@@ -55,10 +55,10 @@ aktueller_soc = st.sidebar.number_input(
 akkugroesse_netto = st.sidebar.number_input("Akkugröße Netto (kWh)", value=default_akku, step=0.1)
 ladeleistung_kw = st.sidebar.number_input("Ladeleistung (kW)", value=default_kw, step=0.1)
 
-# --- LOGIK & DATENABRUF ---
+# --- LOGIK & DATENABRUF (NORMIERT AUF CENT/KWH) ---
 @st.cache_data(ttl=300)
 def lade_preisdaten():
-    timestamps, prices = [], []
+    timestamps, prices_cent = [], []
     morgen_verfuegbar = False
     source_used = None
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -70,9 +70,11 @@ def lade_preisdaten():
         if res.status_code == 200:
             data = res.json()
             raw_ts = data.get("unix_seconds", [])
-            raw_pr = data.get("price", [])
+            raw_pr = data.get("price", []) # EUR / MWh
             if raw_ts and raw_pr:
-                timestamps, prices = raw_ts, raw_pr
+                timestamps = raw_ts
+                # Umrechnung EUR/MWh -> Cent/kWh (/ 10)
+                prices_cent = [p / 10.0 if p is not None else None for p in raw_pr]
                 source_used = "Energy-Charts"
     except Exception:
         pass
@@ -87,7 +89,8 @@ def lade_preisdaten():
                 data = res.json().get("data", [])
                 for eintrag in data:
                     timestamps.append(int(eintrag["start_timestamp"] / 1000))
-                    prices.append(eintrag["marketprice"])
+                    # Awattar marketprice ist in EUR/MWh -> Cent/kWh (/ 10)
+                    prices_cent.append(eintrag["marketprice"] / 10.0)
                 source_used = "Awattar"
         except Exception:
             pass
@@ -97,8 +100,7 @@ def lade_preisdaten():
         morgen_date = (datetime.datetime.now(TZ_BERLIN) + datetime.timedelta(days=1)).date()
 
         filtered_ts, filtered_pr = [], []
-        for ts, p in zip(timestamps, prices):
-            # Nur Daten behalten, die nicht älter als 1 Stunde sind
+        for ts, p in zip(timestamps, prices_cent):
             if ts + 3600 >= jetzt_ts and p is not None:
                 filtered_ts.append(ts)
                 filtered_pr.append(p)
@@ -111,8 +113,7 @@ def lade_preisdaten():
 
     return [], [], False, None
 
-def berechne_tibber_preis(boerse_eur_mwh):
-    boerse_cent = boerse_eur_mwh / 10.0
+def berechne_tibber_preis(boerse_cent):
     fixkosten = 1.81 + 6.39 + 1.32 + 2.05 + 0.941 + 0.446 + 1.56
     return (boerse_cent + fixkosten) * 1.19
 
@@ -126,8 +127,8 @@ def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_s
     for i in range(len(timestamps) - feste_block_groesse + 1):
         ts = timestamps[i]
         
-        # VERGANGENE ZEITEN IGNORIEREN: Startzeitpunkt muss in der Zukunft/Gegenwart liegen
-        if ts + 900 < jetzt_ts:
+        # Nur zukünftige oder aktuell laufende Blöcke
+        if ts + 3600 < jetzt_ts:
             continue
             
         dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
