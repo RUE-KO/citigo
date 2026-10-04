@@ -40,7 +40,7 @@ st.sidebar.header("Fahrzeug & Einstellungen")
 
 fahrzeug = st.sidebar.selectbox("Fahrzeug wählen", ["Škoda Citigo e-iV", "Škoda Enyaq"])
 default_akku = 32.3 if fahrzeug == "Škoda Citigo e-iV" else 77.0
-default_kw = 6.9 if fahrzeug == "Škoda Citigo e-iV" else 11.0
+default_kw = 6.9 if fahrzeug == "Škoda Citigo e-iV" else 10.9
 
 aktueller_soc = st.sidebar.number_input("Aktueller Akkustand (%)", min_value=0.0, max_value=100.0, value=60.0, step=5.0)
 akkugroesse_netto = st.sidebar.number_input("Akkugröße Netto (kWh)", value=default_akku, step=0.1)
