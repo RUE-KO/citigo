@@ -35,16 +35,19 @@ st.title("⚡ EV Ladeplaner")
 TZ_BERLIN = zoneinfo.ZoneInfo("Europe/Berlin")
 TIBBER_TOKEN = st.secrets.get("TIBBER_TOKEN", "")
 
-# --- SEITENLEISTE / EINGABEN ---
-st.sidebar.header("Fahrzeug & Einstellungen")
+# --- FAHRZEUG & EINSTELLUNGEN (DIREKT PROMINENT OBEN) ---
+with st.expander("🚗 Fahrzeug- & Ladeeinstellungen anpassen", expanded=True):
+    col_fzg1, col_fzg2 = st.columns(2)
+    
+    with col_fzg1:
+        fahrzeug = st.selectbox("Fahrzeug wählen", ["Škoda Citigo e-iV", "Škoda Enyaq"])
+        default_akku = 32.3 if fahrzeug == "Škoda Citigo e-iV" else 77.0
+        akkugroesse_netto = st.number_input("Akkugröße Netto (kWh)", value=default_akku, step=0.1)
 
-fahrzeug = st.sidebar.selectbox("Fahrzeug wählen", ["Škoda Citigo e-iV", "Škoda Enyaq"])
-default_akku = 32.3 if fahrzeug == "Škoda Citigo e-iV" else 77.0
-default_kw = 6.9 if fahrzeug == "Škoda Citigo e-iV" else 10.9
-
-aktueller_soc = st.sidebar.number_input("Aktueller Akkustand (%)", min_value=0.0, max_value=100.0, value=60.0, step=5.0)
-akkugroesse_netto = st.sidebar.number_input("Akkugröße Netto (kWh)", value=default_akku, step=0.1)
-ladeleistung_kw = st.sidebar.number_input("Realistische Ladeleistung (kW)", value=default_kw, step=0.1)
+    with col_fzg2:
+        default_kw = 6.9 if fahrzeug == "Škoda Citigo e-iV" else 10.9
+        aktueller_soc = st.number_input("Aktueller Akkustand (%)", min_value=0.0, max_value=100.0, value=60.0, step=5.0)
+        ladeleistung_kw = st.number_input("Realistische Ladeleistung (kW)", value=default_kw, step=0.1)
 
 # --- TIBBER API DATENABRUF ---
 @st.cache_data(ttl=900)
@@ -205,9 +208,9 @@ else:
     heute_datum = datetime.datetime.now(TZ_BERLIN).date()
     morgen_datum = heute_datum + datetime.timedelta(days=1)
 
-    st.caption(f"**{fahrzeug}** | Akkustand: **{aktueller_soc:.0f}%**")
+    st.caption(f"Aktuell ausgewählt: **{fahrzeug}** | Akkustand: **{aktueller_soc:.0f}%**")
 
-    # TAB-TRENUNG FÜR HEUTE UND MORGEN
+    # TAB-TRENNUNG FÜR HEUTE UND MORGEN
     tab_heute, tab_morgen = st.tabs(["📅 Heute", "📅 Morgen"])
 
     with tab_heute:
