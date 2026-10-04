@@ -10,6 +10,7 @@ st.set_page_config(
     layout="centered"
 )
 
+# 2-Spalten-Zwang & kompaktes Design auf dem iPhone
 st.markdown("""
     <style>
         .block-container {padding-top: 1.5rem; padding-bottom: 2rem;}
@@ -33,6 +34,9 @@ st.title("⚡ EV Ladeplaner")
 
 TZ_BERLIN = zoneinfo.ZoneInfo("Europe/Berlin")
 
+# Token aus den Streamlit Secrets auslesen
+TIBBER_TOKEN = st.secrets.get("TIBBER_TOKEN", "")
+
 # --- SEITENLEISTE / EINGABEN ---
 st.sidebar.header("Fahrzeug & Einstellungen")
 
@@ -42,7 +46,7 @@ fahrzeug = st.sidebar.selectbox(
 )
 
 default_akku = 32.3 if fahrzeug == "Škoda Citigo e-iV" else 77.0
-default_kw = 7.2 if fahrzeug == "Škoda Citigo e-iV" else 11.0
+default_kw = 4.6 if fahrzeug == "Škoda Citigo e-iV" else 11.0  # Citigo auf effektive 4.6 kW vorgegeben
 
 aktueller_soc = st.sidebar.number_input(
     "Aktueller Akkustand (%)",
@@ -53,70 +57,83 @@ aktueller_soc = st.sidebar.number_input(
 )
 
 akkugroesse_netto = st.sidebar.number_input("Akkugröße Netto (kWh)", value=default_akku, step=0.1)
-ladeleistung_kw = st.sidebar.number_input("Ladeleistung (kW)", value=default_kw, step=0.1)
+ladeleistung_kw = st.sidebar.number_input("Realistische Ladeleistung (kW)", value=default_kw, step=0.1)
 
-# --- LOGIK & DATENABRUF ---
-@st.cache_data(ttl=300)
-def lade_preisdaten():
-    raw_timestamps, raw_prices = [], []
+# --- TIBBER API DATENABRUF ---
+@st.cache_data(ttl=900)
+def lade_tibber_daten():
+    if not TIBBER_TOKEN:
+        return [], [], False, "Kein Token in den Streamlit Secrets gefunden."
+
+    url = "https://api.tibber.com/v1-beta/gql"
+    headers = {
+        "Authorization": f"Bearer {TIBBER_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    
+    query = """
+    {
+      viewer {
+        homes {
+          currentSubscription {
+            priceInfo {
+              today {
+                startsAt
+                total
+              }
+              tomorrow {
+                startsAt
+                total
+              }
+            }
+          }
+        }
+      }
+    }
+    """
+    
+    ts_15m, prices_cent = [], []
     morgen_verfuegbar = False
-    source_used = None
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-
-    # 1. Energy-Charts
+    
     try:
-        url = "https://api.energy-charts.info/price?bzn=DE-LU"
-        res = requests.get(url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            raw_ts = data.get("unix_seconds", [])
-            raw_pr = data.get("price", []) # EUR / MWh
-            if raw_ts and raw_pr:
-                raw_timestamps = raw_ts
-                raw_prices = [p / 10.0 if p is not None else None for p in raw_pr] # -> Cent/kWh
-                source_used = "Energy-Charts"
-    except Exception:
-        pass
+        response = requests.post(url, json={"query": query}, headers=headers, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if "errors" in data:
+                return [], [], False, f"Tibber API Fehler: {data['errors'][0]['message']}"
+                
+            homes = data.get("data", {}).get("viewer", {}).get("homes", [])
+            if not homes:
+                return [], [], False, "Kein aktiver Tibber-Vertrag im Account gefunden."
+                
+            price_info = homes[0].get("currentSubscription", {}).get("priceInfo", {})
+            
+            raw_entries = price_info.get("today", []) or []
+            tomorrow_entries = price_info.get("tomorrow", []) or []
+            
+            if tomorrow_entries:
+                raw_entries.extend(tomorrow_entries)
+                morgen_verfuegbar = True
 
-    # 2. Awattar Fallback
-    if not raw_timestamps:
-        try:
-            jetzt_start = int(datetime.datetime.now(TZ_BERLIN).replace(hour=0, minute=0, second=0).timestamp() * 1000)
-            url_awattar = f"https://api.awattar.de/v1/marketdata?start={jetzt_start}"
-            res = requests.get(url_awattar, headers=headers, timeout=5)
-            if res.status_code == 200:
-                data = res.json().get("data", [])
-                for eintrag in data:
-                    raw_timestamps.append(int(eintrag["start_timestamp"] / 1000))
-                    raw_prices.append(eintrag["marketprice"] / 10.0) # -> Cent/kWh
-                source_used = "Awattar"
-        except Exception:
-            pass
+            jetzt_ts = datetime.datetime.now(TZ_BERLIN).timestamp()
 
-    if raw_timestamps:
-        jetzt_ts = datetime.datetime.now(TZ_BERLIN).timestamp()
-        morgen_date = (datetime.datetime.now(TZ_BERLIN) + datetime.timedelta(days=1)).date()
+            for eintrag in raw_entries:
+                dt = datetime.datetime.fromisoformat(eintrag["startsAt"]).astimezone(TZ_BERLIN)
+                base_ts = int(dt.timestamp())
+                total_cent = eintrag["total"] * 100.0  # Euro in Cent
+                
+                # Stunden auf 15-Minuten-Intervalle verteilen
+                for q in range(4):
+                    q_ts = base_ts + (q * 900)
+                    if q_ts + 900 >= jetzt_ts:
+                        ts_15m.append(q_ts)
+                        prices_cent.append(total_cent)
 
-        # Stunden-Daten in exakte 15-Minuten-Blöcke aufspalten
-        ts_15m, prices_15m = [], []
-        for ts, p in zip(raw_timestamps, raw_prices):
-            if ts + 3600 >= jetzt_ts and p is not None:
-                for quarter in range(4):
-                    q_ts = ts + (quarter * 900)
-                    ts_15m.append(q_ts)
-                    prices_15m.append(p)
-                    
-                    dt = datetime.datetime.fromtimestamp(q_ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
-                    if dt.date() == morgen_date:
-                        morgen_verfuegbar = True
-                    
-        return ts_15m, prices_15m, morgen_verfuegbar, source_used
-
-    return [], [], False, None
-
-def berechne_tibber_preis(boerse_cent):
-    fixkosten = 1.81 + 6.39 + 1.32 + 2.05 + 0.941 + 0.446 + 1.56
-    return (boerse_cent + fixkosten) * 1.19
+            return ts_15m, prices_cent, morgen_verfuegbar, None
+        else:
+            return [], [], False, f"HTTP Fehler {response.status_code}"
+    except Exception as e:
+        return [], [], False, str(e)
 
 def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_stunde, anzahl_15m_bloecke):
     bestes_fenster, min_schnitt = None, float('inf')
@@ -128,7 +145,6 @@ def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_s
     for i in range(len(timestamps) - anzahl_15m_bloecke + 1):
         ts = timestamps[i]
         
-        # Abgelaufene Blöcke überspringen
         if ts + 900 < jetzt_ts:
             continue
             
@@ -151,16 +167,15 @@ def finde_guenstigstes_fenster_fuer_ziel(timestamps, prices, start_stunde, end_s
                 
     return bestes_fenster, min_schnitt
 
-timestamps, prices, morgen_da, quelle = lade_preisdaten()
+timestamps, prices, morgen_da, err = lade_tibber_daten()
 
-if not timestamps:
-    st.error("⚠️ Aktuell kann keine Preis-Schnittstelle erreicht werden. Bitte versuche es gleich erneut.")
+if err:
+    st.error(f"⚠️ {err}")
+elif not timestamps:
+    st.error("Keine Preisdaten verfügbar.")
 else:
-    if quelle:
-        st.sidebar.caption(f"Datenquelle: {quelle}")
-        
     if not morgen_da:
-        st.sidebar.info("ℹ️ Preise für morgen stehen erst ab ca. 13:00 Uhr bereit.")
+        st.sidebar.info("ℹ️ Preise für morgen stehen ab ca. 13:00–13:30 Uhr bereit.")
 
     st.caption(f"**{fahrzeug}** | Akkustand: **{aktueller_soc:.0f}%**")
 
@@ -187,20 +202,17 @@ else:
                     benoetigte_prozent = ziel_soc - aktueller_soc
                     benoetigte_kwh = (benoetigte_prozent / 100.0) * akkugroesse_netto
                     benoetigte_stunden = benoetigte_kwh / ladeleistung_kw
-                    
-                    # Exakte Anzahl 15-Minuten-Häppchen
                     anzahl_15m_bloecke = int(round((benoetigte_stunden / 0.25), 0))
                     
-                    bestes_ts, schnitt_boerse = finde_guenstigstes_fenster_fuer_ziel(
+                    bestes_ts, schnitt_preis = finde_guenstigstes_fenster_fuer_ziel(
                         timestamps, prices, von, bis, anzahl_15m_bloecke
                     )
                     
                     if bestes_ts:
                         start_dt = datetime.datetime.fromtimestamp(bestes_ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
                         end_dt = start_dt + datetime.timedelta(hours=benoetigte_stunden)
-                        preis = berechne_tibber_preis(schnitt_boerse)
                         
-                        st.metric("Preis", f"~{preis:.2f} ct")
+                        st.metric("Preis", f"{schnitt_preis:.2f} ct")
                         st.text(f"🕒 {start_dt.strftime('%d.%m. %H:%M')}\n   bis {end_dt.strftime('%H:%M')}")
                         st.caption(f"⚙️ Abfahrt: **{end_dt.strftime('%H:%M')}**")
                     else:
