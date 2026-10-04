@@ -57,38 +57,40 @@ akkugroesse_netto = st.sidebar.number_input("Akkugröße Netto (kWh)", value=def
 ladeleistung_kw = st.sidebar.number_input("Ladeleistung (kW)", value=default_kw, step=0.1)
 
 # --- LOGIK & DATENABRUF ---
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=300)
 def lade_preisdaten():
-    heute = datetime.datetime.now(TZ_BERLIN).date()
-    morgen = heute + datetime.timedelta(days=1)
+    # Einfacher API-Aufruf ohne Datums-Parameter
+    url = "https://api.energy-charts.info/price?bzn=DE-LU"
+    headers = {'User-Agent': 'Mozilla/5.0'}
     
     timestamps, prices = [], []
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     morgen_verfuegbar = False
 
-    # 1. Heute abrufen (MUSS klappen)
-    url_heute = f"https://api.energy-charts.info/price?bzn=DE-LU&start={heute.strftime('%Y-%m-%d')}&end={heute.strftime('%Y-%m-%d')}"
     try:
-        r1 = requests.get(url_heute, headers=headers, timeout=5)
-        if r1.status_code == 200:
-            d1 = r1.json()
-            if "unix_seconds" in d1 and d1["unix_seconds"]:
-                timestamps.extend(d1["unix_seconds"])
-                prices.extend(d1["price"])
-    except Exception:
-        pass
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if "unix_seconds" in data and "price" in data:
+                raw_ts = data["unix_seconds"]
+                raw_pr = data["price"]
+                
+                # Nur Daten ab Beginn des heutigen Tages behalten
+                heute_start_ts = datetime.datetime.now(TZ_BERLIN).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ).timestamp()
 
-    # 2. Morgen abrufen (Optional, falls schon da)
-    url_morgen = f"https://api.energy-charts.info/price?bzn=DE-LU&start={morgen.strftime('%Y-%m-%d')}&end={morgen.strftime('%Y-%m-%d')}"
-    try:
-        r2 = requests.get(url_morgen, headers=headers, timeout=5)
-        if r2.status_code == 200:
-            d2 = r2.json()
-            if "unix_seconds" in d2 and d2["unix_seconds"]:
-                timestamps.extend(d2["unix_seconds"])
-                prices.extend(d2["price"])
-                morgen_verfuegbar = True
-    except Exception:
+                morgen_date = (datetime.datetime.now(TZ_BERLIN) + datetime.timedelta(days=1)).date()
+
+                for ts, p in zip(raw_ts, raw_pr):
+                    if ts >= heute_start_ts:
+                        timestamps.append(ts)
+                        prices.append(p)
+                        
+                        # Prüfen, ob schon Daten für morgen enthalten sind
+                        dt = datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
+                        if dt.date() == morgen_date:
+                            morgen_verfuegbar = True
+    except Exception as e:
         pass
 
     return timestamps, prices, morgen_verfuegbar
@@ -129,7 +131,7 @@ if not morgen_da and len(timestamps) > 0:
     st.sidebar.info("ℹ️ Preise für morgen stehen erst ab ca. 13:00 Uhr bereit.")
 
 if not timestamps:
-    st.error("Keine Preisdaten verfügbar. Bitte Seite in Kürze neu laden.")
+    st.error("Keine Preisdaten verfügbar. Bitte versuche es in wenigen Augenblicken erneut.")
 else:
     st.caption(f"**{fahrzeug}** | Akkustand: **{aktueller_soc:.0f}%**")
 
