@@ -219,7 +219,12 @@ def render_empfehlungen_fuer_tag(timestamps, prices, ziel_datum, aktueller_soc, 
                         st.text(f"🕒 {start_dt.strftime('%H:%M')}\n   bis {end_dt.strftime('%H:%M')}")
                         st.caption(f"⚙️ Abfahrt: **{end_dt.strftime('%H:%M')}** ({dauer_str})")
                     else:
-                        st.caption("Kein Fenster ❌")
+                        jetzt_dt = datetime.datetime.now(TZ_BERLIN)
+                        # Wenn es sich um HEUTE handelt und das Zeitfenster bereits abgelaufen ist:
+                        if ziel_datum == jetzt_dt.date() and bis <= jetzt_dt.hour and bis != 24:
+                            st.caption("Zeitfenster heute vorbei ⏳")
+                        else:
+                            st.caption("Kein Fenster ❌")
 
 timestamps, prices, morgen_da, err = lade_tibber_daten()
 
