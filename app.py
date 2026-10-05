@@ -35,16 +35,22 @@ st.title("⚡ EV Ladeplaner")
 TZ_BERLIN = zoneinfo.ZoneInfo("Europe/Berlin")
 TIBBER_TOKEN = st.secrets.get("TIBBER_TOKEN", "")
 
-# 1. Auswahl des Fahrzeugs (Beispiel)
-fahrzeug = st.selectbox("Fahrzeug wählen", ["Škoda Citigo e-iV", "Škoda Enyaq"])
+# --- FAHRZEUG- & SPALTEN-EINSTELLUNGEN ---
+col_fzg1, col_fzg2 = st.columns(2)
 
-# 2. Dynamischer Default-SOC je nach gewähltem Fahrzeug
+with col_fzg1:
+    fahrzeug = st.selectbox("Fahrzeug wählen", ["Škoda Citigo e-iV", "Škoda Enyaq"])
+
+# Parameter basierend auf gewähltem Fahrzeug setzen
 if fahrzeug == "Škoda Citigo e-iV":
-    default_soc = 45.0  # 45 % entspricht ca. 100 km beim Citigo
+    default_soc = 45.0          # 45 % entspricht ca. 100 km beim Citigo
+    akkugroesse_netto = 32.3    # Citigo e-iV Akkugröße (netto)
+    ladeleistung_kw = 7.2       # 2-phasig max 7.2 kW
 else:
-    default_soc = 25.0  # 25 % entspricht ca. 100 km beim Enyaq
+    default_soc = 25.0          # 25 % entspricht ca. 100 km beim Enyaq
+    akkugroesse_netto = 77.0    # Enyaq iV 80/85 (netto)
+    ladeleistung_kw = 11.0      # 3-phasig max 11 kW
 
-# 3. Eingabefeld mit dem berechneten default_soc
 with col_fzg2:
     aktueller_soc = st.number_input(
         "Aktueller Akkustand (%)", 
@@ -53,7 +59,7 @@ with col_fzg2:
         value=default_soc, 
         step=5.0
     )
-            
+
 # --- TIBBER API DATENABRUF ---
 @st.cache_data(ttl=900)
 def lade_tibber_daten():
@@ -167,9 +173,6 @@ def render_empfehlungen_fuer_tag(timestamps, prices, ziel_datum, aktueller_soc, 
         "🌙 Nacht (22 - 06 Uhr)": (22, 6),
         "🌆 Abend (17 - 22 Uhr)": (17, 22)
     }
-
-    benoetigte_prozent_80 = 80.0 - aktueller_soc
-    benoetigte_prozent_100 = 100.0 - aktueller_soc
 
     for kat_name, (von, bis) in kategorien.items():
         with st.expander(kat_name, expanded=True):
