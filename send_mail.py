@@ -22,7 +22,14 @@ def check_and_send():
         r = requests.post(url, json={"query": query}, headers=headers, timeout=10)
         if r.status_code == 200:
             data = r.json()
-            tomorrow_data = data.get("data", {}).get("viewer", {}).get("homes", [])[0].get("currentSubscription", {}).get("priceInfo", {}).get("tomorrow", [])
+            
+            # Sicherer Zugriff auf das homes-Array
+            homes = data.get("data", {}).get("viewer", {}).get("homes", [])
+            if not homes:
+                print("Fehler: Keine Tibber-Home-Daten empfangen.")
+                return
+
+            tomorrow_data = homes[0].get("currentSubscription", {}).get("priceInfo", {}).get("tomorrow", [])
             
             if tomorrow_data and len(tomorrow_data) > 0:
                 text = (
@@ -46,9 +53,11 @@ def check_and_send():
                     server.login(EMAIL_USER, EMAIL_PASS)
                     server.sendmail(EMAIL_USER, recipients, msg.as_string())
                     
-                print("E-Mail erfolgreich gesendet!")
+                print(f"E-Mail erfolgreich gesendet an: {recipients}")
             else:
-                print("Preise für morgen stehen aktuell noch nicht bereit.")
+                print("Preise für morgen stehen aktuell noch nicht bereit (Abruf noch vor ~13:00 Uhr).")
+        else:
+            print(f"Tibber API antwortet mit HTTP Status {r.status_code}")
     except Exception as e:
         print(f"Fehler beim Senden: {e}")
 
