@@ -202,9 +202,16 @@ def render_empfehlungen_fuer_tag(timestamps, prices, ziel_datum, aktueller_soc, 
                         start_dt = datetime.datetime.fromtimestamp(bestes_ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
                         end_dt = start_dt + datetime.timedelta(hours=benoetigte_stunden)
                         
+                        # Ladedauer in Stunden und Minuten umrechnen
+                        dauer_std = int(benoetigte_stunden)
+                        dauer_min = int(round((benoetigte_stunden - dauer_std) * 60))
+                        dauer_str = f"{dauer_std}h {dauer_min}m" if dauer_std > 0 else f"{dauer_min}m"
+                        
                         st.metric("Preis", f"{schnitt_preis:.2f} ct")
                         st.text(f"🕒 {start_dt.strftime('%H:%M')}\n   bis {end_dt.strftime('%H:%M')}")
-                        st.caption(f"⚙️ Abfahrt: **{end_dt.strftime('%H:%M')}**")
+                        
+                        # Abfahrtszeit inkl. Ladedauer in Klammern dahinter
+                        st.caption(f"⚙️ Abfahrt: **{end_dt.strftime('%H:%M')}** ({dauer_str})")
                     else:
                         st.caption("Kein Fenster ❌")
 
