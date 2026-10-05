@@ -59,7 +59,7 @@ with col_fzg2:
         min_value=0.0, 
         max_value=100.0, 
         value=default_soc, 
-        step=1.0
+        step=5.0
     )
 
 # --- TIBBER API DATENABRUF ---
@@ -192,7 +192,9 @@ def render_empfehlungen_fuer_tag(timestamps, prices, ziel_datum, aktueller_soc, 
                     benoetigte_prozent = ziel_soc - aktueller_soc
                     benoetigte_kwh = (benoetigte_prozent / 100.0) * akkugroesse_netto
                     benoetigte_stunden = benoetigte_kwh / ladeleistung_kw
-                    anzahl_15m_bloecke = int(round((benoetigte_stunden / 0.25), 0))
+                    
+                    # Mindestens 1 Block (15 Minuten) ansetzen
+                    anzahl_15m_bloecke = max(1, int(round(benoetigte_stunden / 0.25)))
                     
                     bestes_ts, schnitt_preis = finde_guenstigstes_fenster(
                         timestamps, prices, von, bis, anzahl_15m_bloecke, ziel_datum
@@ -202,15 +204,19 @@ def render_empfehlungen_fuer_tag(timestamps, prices, ziel_datum, aktueller_soc, 
                         start_dt = datetime.datetime.fromtimestamp(bestes_ts, tz=datetime.timezone.utc).astimezone(TZ_BERLIN)
                         end_dt = start_dt + datetime.timedelta(hours=benoetigte_stunden)
                         
-                        # Ladedauer in Stunden und Minuten umrechnen
-                        dauer_std = int(benoetigte_stunden)
-                        dauer_min = int(round((benoetigte_stunden - dauer_std) * 60))
-                        dauer_str = f"{dauer_std}h {dauer_min}m" if dauer_std > 0 else f"{dauer_min}m"
+                        # Saubere Umrechnung der Ladedauer in Std/Min
+                        gesamte_minuten = int(round(benoetigte_stunden * 60))
+                        dauer_std, dauer_min = divmod(gesamte_minuten, 60)
+                        
+                        if dauer_std > 0 and dauer_min > 0:
+                            dauer_str = f"{dauer_std}h {dauer_min}m"
+                        elif dauer_std > 0:
+                            dauer_str = f"{dauer_std}h"
+                        else:
+                            dauer_str = f"{dauer_min}m"
                         
                         st.metric("Preis", f"{schnitt_preis:.2f} ct")
                         st.text(f"🕒 {start_dt.strftime('%H:%M')}\n   bis {end_dt.strftime('%H:%M')}")
-                        
-                        # Abfahrtszeit inkl. Ladedauer in Klammern dahinter
                         st.caption(f"⚙️ Abfahrt: **{end_dt.strftime('%H:%M')}** ({dauer_str})")
                     else:
                         st.caption("Kein Fenster ❌")
