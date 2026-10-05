@@ -35,25 +35,24 @@ st.title("⚡ EV Ladeplaner")
 TZ_BERLIN = zoneinfo.ZoneInfo("Europe/Berlin")
 TIBBER_TOKEN = st.secrets.get("TIBBER_TOKEN", "")
 
-# --- FAHRZEUG & EINSTELLUNGEN ---
-with st.expander("🚗 Fahrzeug & Akkustand", expanded=True):
-    col_fzg1, col_fzg2 = st.columns(2)
-    
-    with col_fzg1:
-        fahrzeug = st.selectbox("Fahrzeug wählen", ["Škoda Citigo e-iV", "Škoda Enyaq"])
-        default_akku = 32.3 if fahrzeug == "Škoda Citigo e-iV" else 77.0
-        default_kw = 6.9 if fahrzeug == "Škoda Citigo e-iV" else 10.9
+# 1. Auswahl des Fahrzeugs (Beispiel)
+fahrzeug = st.selectbox("Fahrzeug wählen", ["Škoda Citigo e-iV", "Škoda Enyaq"])
 
-    with col_fzg2:
-        aktueller_soc = st.number_input("Aktueller Akkustand (%)", min_value=0.0, max_value=100.0, value=60.0, step=5.0)
+# 2. Dynamischer Default-SOC je nach gewähltem Fahrzeug
+if fahrzeug == "Škoda Citigo e-iV":
+    default_soc = 45.0  # 45 % entspricht ca. 100 km beim Citigo
+else:
+    default_soc = 25.0  # 25 % entspricht ca. 100 km beim Enyaq
 
-    # Einklappbare Experten-Einstellungen (standardmäßig zugeklappt)
-    with st.expander("⚙️️ Technische Details (Akkugröße & Ladeleistung)", expanded=False):
-        col_det1, col_det2 = st.columns(2)
-        with col_det1:
-            akkugroesse_netto = st.number_input("Akkugröße Netto (kWh)", value=default_akku, step=0.1)
-        with col_det2:
-            ladeleistung_kw = st.number_input("Realistische Ladeleistung (kW)", value=default_kw, step=0.1)
+# 3. Eingabefeld mit dem berechneten default_soc
+with col_fzg2:
+    aktueller_soc = st.number_input(
+        "Aktueller Akkustand (%)", 
+        min_value=0.0, 
+        max_value=100.0, 
+        value=default_soc, 
+        step=5.0
+    )
             
 # --- TIBBER API DATENABRUF ---
 @st.cache_data(ttl=900)
